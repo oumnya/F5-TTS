@@ -1,9 +1,6 @@
 FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
-
 USER root
-
 ARG DEBIAN_FRONTEND=noninteractive
-
 LABEL github_repo="https://github.com/SWivid/F5-TTS"
 
 RUN set -x \
@@ -14,11 +11,13 @@ RUN set -x \
     && apt-get clean
 
 WORKDIR /workspace
-
 RUN git clone https://github.com/SWivid/F5-TTS.git \
     && cd F5-TTS \
     && pip install -e .[eval]
 
 ENV SHELL=/bin/bash
-
 WORKDIR /workspace/F5-TTS
+
+# Add the start command
+ENTRYPOINT ["f5-tts_infer-gradio"]
+CMD ["--host", "0.0.0.0", "--port", "7860"]
