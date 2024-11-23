@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import soundfile as sf
 import sys
+import requests
+from typing import Optional
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from f5_tts.api import F5TTS
 
@@ -16,7 +18,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,7 +26,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global TTS instance
 tts = None
 
 @app.on_event("startup")
@@ -57,44 +57,65 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """
-    Check if the API is running and models are loaded
-    """
     return {
         "status": "healthy",
         "models_loaded": tts is not None,
         "device": tts.device if tts else None
     }
 
+def cleanup_file(path: str):
+    try:
+        if os.path.exists(path):
+            os.unlink(path)
+    except Exception as e:
+        print(f"Error cleaning up file {path}: {e}")
+
+async def download_audio(url: str) -> str:
+    """Download audio from URL and save to temporary file"""
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        ref_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        ref_path = ref_file.name
+        ref_file.write(response.content)
+        ref_file.close()
+        return ref_path
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error downloading audio: {str(e)}")
+
 @app.post("/tts/generate")
 async def generate_tts(
-    reference_audio: UploadFile = File(..., description="Reference audio file (WAV format)"),
+    reference_audio: Optional[UploadFile] = File(None, description="Reference audio file (WAV format)"),
+    reference_audio_url: Optional[str] = Form(None, description="URL to reference audio file (WAV format)"),
     reference_text: str = Form(..., description="Text content of the reference audio"),
     text: str = Form(..., description="Text to convert to speech"),
     remove_silence: bool = Form(False, description="Whether to remove silence from the generated audio"),
     speed: float = Form(1.0, description="Speech speed multiplier (1.0 = normal speed)"),
 ):
-    """
-    Generate speech from text using F5-TTS model
-    
-    - Upload a reference audio file and its corresponding text
-    - Provide the text you want to convert to speech
-    - Optionally adjust speed and silence removal
-    
-    Returns a WAV audio file
-    """
     if not tts:
         raise HTTPException(status_code=500, detail="TTS model not initialized")
     
+    if not reference_audio and not reference_audio_url:
+        raise HTTPException(status_code=400, detail="Either reference_audio or reference_audio_url must be provided")
+    
+    ref_path = None
+    output_path = None
+    
     try:
-        # Save uploaded reference audio to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_ref:
-            temp_ref.write(await reference_audio.read())
-            ref_path = temp_ref.name
+        # Handle reference audio from either file upload or URL
+        if reference_audio:
+            ref_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            ref_path = ref_file.name
+            ref_file.write(await reference_audio.read())
+            ref_file.close()
+        else:
+            ref_path = await download_audio(reference_audio_url)
 
         # Create temporary output file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_out:
-            output_path = temp_out.name
+        out_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        output_path = out_file.name
+        out_file.close()
 
         # Generate audio
         wav, sr, _ = tts.infer(
@@ -106,19 +127,28 @@ async def generate_tts(
             file_wave=output_path
         )
 
-        # Clean up reference file
-        os.unlink(ref_path)
-
-        # Return the generated audio file
         return FileResponse(
             output_path,
             media_type="audio/wav",
-            filename="generated_audio.wav",
-            background=os.unlink
+            filename="generated_audio.wav"
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Clean up temporary files
+        if ref_path:
+            cleanup_file(ref_path)
+        if output_path:
+            # Delay cleanup of output file to ensure it's sent completely
+            try:
+                import asyncio
+                asyncio.create_task(
+                    asyncio.sleep(1).then(lambda: cleanup_file(output_path))
+                )
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
