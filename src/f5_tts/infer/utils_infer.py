@@ -3,6 +3,7 @@
 import os
 import sys
 
+os.environ["PYTOCH_ENABLE_MPS_FALLBACK"] = "1"  # for MPS device compatibility
 sys.path.append(f"../../{os.path.dirname(os.path.abspath(__file__))}/third_party/BigVGAN/")
 
 import hashlib
@@ -33,8 +34,6 @@ from f5_tts.model.utils import (
 _ref_audio_cache = {}
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-if device == "mps":
-    os.environ["PYTOCH_ENABLE_MPS_FALLBACK"] = "1"
 
 # -----------------------------------------
 
@@ -136,10 +135,10 @@ def load_vocoder(vocoder_name="vocos", is_local=False, local_path="", device=dev
 asr_pipe = None
 
 
-def initialize_asr_pipeline(device=device, dtype=None):
+def initialize_asr_pipeline(device: str = device, dtype=None):
     if dtype is None:
         dtype = (
-            torch.float16 if device == "cuda" and torch.cuda.get_device_properties(device).major >= 6 else torch.float32
+            torch.float16 if "cuda" in device and torch.cuda.get_device_properties(device).major >= 6 else torch.float32
         )
     global asr_pipe
     asr_pipe = pipeline(
@@ -150,13 +149,29 @@ def initialize_asr_pipeline(device=device, dtype=None):
     )
 
 
+# transcribe
+
+
+def transcribe(ref_audio, language=None):
+    global asr_pipe
+    if asr_pipe is None:
+        initialize_asr_pipeline(device=device)
+    return asr_pipe(
+        ref_audio,
+        chunk_length_s=30,
+        batch_size=128,
+        generate_kwargs={"task": "transcribe", "language": language} if language else {"task": "transcribe"},
+        return_timestamps=False,
+    )["text"].strip()
+
+
 # load model checkpoint for inference
 
 
-def load_checkpoint(model, ckpt_path, device, dtype=None, use_ema=True):
+def load_checkpoint(model, ckpt_path, device: str, dtype=None, use_ema=True):
     if dtype is None:
         dtype = (
-            torch.float16 if device == "cuda" and torch.cuda.get_device_properties(device).major >= 6 else torch.float32
+            torch.float16 if "cuda" in device and torch.cuda.get_device_properties(device).major >= 6 else torch.float32
         )
     model = model.to(dtype)
 
@@ -164,9 +179,9 @@ def load_checkpoint(model, ckpt_path, device, dtype=None, use_ema=True):
     if ckpt_type == "safetensors":
         from safetensors.torch import load_file
 
-        checkpoint = load_file(ckpt_path)
+        checkpoint = load_file(ckpt_path, device=device)
     else:
-        checkpoint = torch.load(ckpt_path, weights_only=True)
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
 
     if use_ema:
         if ckpt_type == "safetensors":
@@ -187,6 +202,9 @@ def load_checkpoint(model, ckpt_path, device, dtype=None, use_ema=True):
         if ckpt_type == "safetensors":
             checkpoint = {"model_state_dict": checkpoint}
         model.load_state_dict(checkpoint["model_state_dict"])
+
+    del checkpoint
+    torch.cuda.empty_cache()
 
     return model.to(device)
 
@@ -306,17 +324,8 @@ def preprocess_ref_audio_text(ref_audio_orig, ref_text, clip_short=True, show_in
             show_info("Using cached reference text...")
             ref_text = _ref_audio_cache[audio_hash]
         else:
-            global asr_pipe
-            if asr_pipe is None:
-                initialize_asr_pipeline(device=device)
             show_info("No reference text provided, transcribing reference audio...")
-            ref_text = asr_pipe(
-                ref_audio,
-                chunk_length_s=30,
-                batch_size=128,
-                generate_kwargs={"task": "transcribe"},
-                return_timestamps=False,
-            )["text"].strip()
+            ref_text = transcribe(ref_audio)
             # Cache the transcribed text (not caching custom ref_text, enabling users to do manual tweak)
             _ref_audio_cache[audio_hash] = ref_text
     else:
