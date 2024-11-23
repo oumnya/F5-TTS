@@ -88,7 +88,7 @@ async def download_audio(url: str) -> str:
 async def generate_tts(
     reference_audio: Optional[UploadFile] = File(None, description="Reference audio file (WAV format)"),
     reference_audio_url: Optional[str] = Form(None, description="URL to reference audio file (WAV format)"),
-    reference_text: str = Form(..., description="Text content of the reference audio"),
+    reference_text: str = Form("", description="Text content of the reference audio (leave empty for auto-transcription)"),
     text: str = Form(..., description="Text to convert to speech"),
     remove_silence: bool = Form(False, description="Whether to remove silence from the generated audio"),
     speed: float = Form(1.0, description="Speech speed multiplier (1.0 = normal speed)"),
@@ -117,7 +117,7 @@ async def generate_tts(
         output_path = out_file.name
         out_file.close()
 
-        # Generate audio
+        # Generate audio - F5TTS will handle transcription automatically if reference_text is empty
         wav, sr, _ = tts.infer(
             ref_file=ref_path,
             ref_text=reference_text,
@@ -141,7 +141,6 @@ async def generate_tts(
         if ref_path:
             cleanup_file(ref_path)
         if output_path:
-            # Delay cleanup of output file to ensure it's sent completely
             try:
                 import asyncio
                 asyncio.create_task(
