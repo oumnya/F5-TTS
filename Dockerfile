@@ -17,11 +17,13 @@ RUN git clone https://github.com/SWivid/F5-TTS.git \
     && git submodule update --init --recursive \
     && sed -i '7iimport sys\nsys.path.append(os.path.dirname(os.path.abspath(__file__)))' src/third_party/BigVGAN/bigvgan.py \
     && pip install -e . --no-cache-dir \
-    && pip install fastapi uvicorn python-multipart
+    && pip install fastapi uvicorn python-multipart cached-path
+
+# Copy the REST API file to the correct location
+COPY ./src/f5_tts/rest_api.py /workspace/F5-TTS/src/f5_tts/rest_api.py
 
 ENV SHELL=/bin/bash
 WORKDIR /workspace/F5-TTS
 
 # Change from gradio to REST API
 ENTRYPOINT ["python", "src/f5_tts/rest_api.py"]
-CMD ["--host", "0.0.0.0", "--port", "8000"]
